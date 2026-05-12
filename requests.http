@@ -1,0 +1,32 @@
+@baseUrl = http://localhost:5000
+
+### Health check
+GET {{baseUrl}}/health
+
+### Add a document
+POST {{baseUrl}}/api/documents
+Content-Type: application/json
+
+{
+  "title": "Refund Policy",
+  "content": "We offer phone support 9-5 days a week."
+}
+
+### List documents
+GET {{baseUrl}}/api/documents
+
+### Ask a question
+POST {{baseUrl}}/api/ask
+Content-Type: application/json
+
+{
+  "question": "Can I get a refund?"
+}
+
+### Ask a question that may not exist in context
+POST {{baseUrl}}/api/ask
+Content-Type: application/json
+
+{
+  "question": "Do you offer phone support?"
+}
