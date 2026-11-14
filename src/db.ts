@@ -32,10 +32,14 @@ if (!parsedDatabaseUrl.username) {
   throw new Error("DATABASE_URL is missing the database username.");
 }
 
+// Connection-string SSL settings can override the Pool's ssl option.
+// Require hostname and certificate verification even when the URL says sslmode=require.
+parsedDatabaseUrl.searchParams.set("sslmode", "verify-full");
+
 const pool = new Pool({
-  connectionString: databaseUrl,
+  connectionString: parsedDatabaseUrl.toString(),
   ssl: {
-    rejectUnauthorized: false
+    rejectUnauthorized: true
   }
 });
 

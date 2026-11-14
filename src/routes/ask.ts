@@ -1,8 +1,6 @@
 import express, { NextFunction, Request, Response } from "express";
-import * as db from "../db";
-import { generateQueryEmbedding } from "../services/embeddingService";
-import { generateAnswer } from "../services/geminiService";
-import { AskRequestBody, ChunkRow, RelevantChunk } from "../types";
+import { answers, embeddings, store } from "../providers";
+import { AskRequestBody, RelevantChunk } from "../types";
 
 const router = express.Router();
 const FALLBACK_ANSWER = "I don't have enough information in the provided documents.";
@@ -15,7 +13,7 @@ router.post(
     res: Response,
     next: NextFunction
   ): Promise<void> => {
-    const question = String(req.body.question || "").trim();
+    const question = String(req.body?.question || "").trim();
 
     if (!question) {
       res.status(400).json({ error: "Question is required." });
@@ -23,23 +21,10 @@ router.post(
     }
 
     try {
-      const questionEmbedding = await generateQueryEmbedding(question);
-
-      const result = await db.query<ChunkRow>(
-        `SELECT
-        id,
-        document_id,
-        content,
-        embedding <=> $1::vector AS distance
-      FROM chunks
-      ORDER BY embedding <=> $1::vector
-      LIMIT 3`,
-        [db.toVectorString(questionEmbedding)]
-      );
-
-      const chunks = result.rows;
+      const questionEmbedding = await embeddings.embedQuery(question);
+      const chunks = await store.search(questionEmbedding, 3);
       const relevantChunks: RelevantChunk[] = chunks.filter(
-        (chunk: ChunkRow) => Number(chunk.distance) <= MAX_RELEVANT_DISTANCE
+        (chunk) => Number(chunk.distance) <= MAX_RELEVANT_DISTANCE
       );
 
       if (relevantChunks.length === 0) {
@@ -51,7 +36,7 @@ router.post(
       }
 
       // The model only sees the top matching chunks, not the full database.
-      const answer = await generateAnswer(question, relevantChunks);
+      const answer = await answers.answer(question, relevantChunks);
 
       res.json({
         answer: answer || FALLBACK_ANSWER,
