@@ -1,182 +1,60 @@
-# Simple RAG API
+# Standalone RAG API MVP
 
-Minimal Express + TypeScript API for storing text documents, embedding their chunks with Gemini, saving them in Neon PostgreSQL, and answering questions from retrieved context only.
+An HTTP service that an existing application can use to answer questions from its own text documents. Deploy one service per app for the simplest setup. It ships with Gemini for embeddings and answers, and PostgreSQL with pgvector for storage. The HTTP routes use provider interfaces so other implementations can be added without changing the API.
 
-## Stack
+## Setup
 
-- Node.js
-- TypeScript
-- Express
-- Neon PostgreSQL
-- `pgvector`
-- Google Gemini
+1. Install Node.js and a PostgreSQL database that permits the `vector` extension (Neon works). Keep the database URL server-side.
+2. Run `npm ci` and copy `.env.example` to `.env`.
+3. Set `DATABASE_URL`, `GEMINI_API_KEY`, and two different random keys in `.env`: `API_KEY` for questions and `ADMIN_API_KEY` for document management. Each key must be at least 32 bytes (for example, generate each with `openssl rand -hex 32`). Sample values are rejected at startup.
+4. Run `src/sql/init.sql` against the database. If `DATABASE_URL` is exported in your shell, use `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/init.sql`; a value in `.env` alone is not exported to the shell. The Neon SQL editor also works. The script is repeatable and adds `external_id` to the original schema when needed.
+5. Run `npm run dev`, or `npm run build && npm start`.
+6. Request `GET http://localhost:5000/health` and expect `{"status":"ok"}`.
 
-## How it works
+Run `npm test` for the local build and document replacement check.
 
-1. `POST /api/documents` stores a document in `documents`.
-2. The document content is split into paragraph-based chunks of about 500 characters.
-3. Each chunk is embedded with `gemini-embedding-001` using the Gemini retrieval-document task type.
-4. Chunks and embeddings are stored in `chunks`.
-5. `POST /api/ask` embeds the question with the Gemini retrieval-query task type.
-6. The API retrieves the 3 nearest chunks with pgvector cosine distance.
-7. Only chunks with distance `<= 0.35` are passed to Gemini for the final answer.
-8. If no chunk passes that threshold, the API returns:
-   `I don't have enough information in the provided documents.`
+The database client verifies the server certificate. Use a valid TLS connection string and trusted CA; do not disable certificate verification to make a connection work. `EMBEDDING_DIMENSIONS` must match the schema's `vector(3072)`. Choose a Gemini answer model available to your account through `GEMINI_MODEL`.
 
-## Project structure
+Keep both API keys on your app's backend. `CORS_ORIGIN` is optional and accepts comma-separated trusted browser origins. Server-to-server calls do not need CORS. Use HTTPS when exposing the service beyond localhost.
 
-```text
-src/
-  index.ts
-  db.ts
-  routes/
-    documents.ts
-    ask.ts
-  services/
-    chunkService.ts
-    embeddingService.ts
-    geminiService.ts
-  sql/
-    init.sql
-requests.http
-```
+## Connect an existing app
 
-## Environment
-
-Create `.env` in the project root:
-
-```env
-PORT=5000
-DATABASE_URL=your_neon_postgresql_connection_string
-GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL=gemini-1.5-flash
-EMBEDDING_MODEL=gemini-embedding-001
-EMBEDDING_DIMENSIONS=3072
-```
-
-Notes:
-
-- `DATABASE_URL` must be a valid `postgres://` or `postgresql://` Neon connection string.
-- SSL is enabled in the Postgres client config.
-- `EMBEDDING_DIMENSIONS` must match `vector(3072)` in [src/sql/init.sql](/C:/Users/Lenovo/Desktop/Personal/ai-app/simple-rag-api/src/sql/init.sql:1).
-
-## Database setup
-
-Run the SQL in [src/sql/init.sql](/C:/Users/Lenovo/Desktop/Personal/ai-app/simple-rag-api/src/sql/init.sql:1):
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-
-CREATE TABLE IF NOT EXISTS documents (
-  id SERIAL PRIMARY KEY,
-  title TEXT NOT NULL,
-  content TEXT NOT NULL,
-  created_at TIMESTAMP DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS chunks (
-  id SERIAL PRIMARY KEY,
-  document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
-  content TEXT NOT NULL,
-  embedding vector(3072),
-  created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-## Run locally
+Call the service from your app's backend with `X-Api-Key`. Each deployment has one document collection. Use the admin key to manage documents and the query key to ask questions. Replace the sample keys below with your configured values; keep them out of browser code and source control.
 
 ```bash
-npm install
-npm run dev
+curl -X POST http://localhost:5000/api/documents \
+  -H 'Content-Type: application/json' \
+  -H 'X-Api-Key: YOUR_ADMIN_API_KEY' \
+  -d '{"externalId":"refund-policy","title":"Refund policy","content":"Refunds are available within seven days."}'
+
+curl -X POST http://localhost:5000/api/ask \
+  -H 'Content-Type: application/json' \
+  -H 'X-Api-Key: YOUR_API_KEY' \
+  -d '{"question":"When can I get a refund?"}'
 ```
 
-Build and run compiled output:
+`externalId` is optional. Reusing one atomically updates the document and replaces its chunks while preserving its numeric ID. Without it, each POST creates a new document. Text is limited to 20,000 characters and 40 chunks per request.
 
-```bash
-npm run build
-npm start
-```
+A successful document request returns HTTP 201 with `documentId` and `chunksCreated`. A successful question returns `answer` and `sources` (each source has a `documentId` and chunk `content`). Listing returns document IDs, external IDs, titles, and creation times. Delete returns HTTP 204, or 404 when the ID does not exist. Empty required fields return 400; oversized documents return 413. A missing or invalid key returns 401; too many requests return 429 with `Retry-After`.
 
-Default server URL:
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/health` | Liveness check; no key required |
+| POST | `/api/documents` | Add or replace text (`title`, `content`, optional `externalId`) |
+| GET | `/api/documents` | List documents |
+| DELETE | `/api/documents/:id` | Delete a document and its chunks |
+| POST | `/api/ask` | Ask a question; returns `answer` and `sources` |
 
-```text
-http://localhost:5000
-```
+All `/api` routes require `X-Api-Key`. Document routes allow 20 requests per minute; question requests allow 60 per minute. These budgets are shared across callers in one server process and reset on restart. Use a shared rate-limit store if running multiple server instances. An answer without relevant chunks uses the fallback message and empty sources.
 
-## API
+For a quick integration check after setup, add one short document with an `externalId`, send it again with changed content, and confirm the returned `documentId` stays the same. Then list documents and ask a question about the updated content. This uses the configured database and Gemini account, so `npm test` alone does not validate the full flow.
 
-### `GET /health`
+## Providers
 
-Response:
+The contracts are in `src/providers/contracts.ts`. `src/providers/index.ts` is the single place that wires the current Gemini and PostgreSQL implementations. To add a provider, implement the matching contract and replace its wiring there; the HTTP routes stay the same. Each deployment still serves one app and one document collection.
 
-```json
-{
-  "status": "ok"
-}
-```
+The SQL schema stores vectors with 3072 dimensions. Startup checks that the embedding provider and store agree on dimensions. A different embedding model, even with the same dimensions, requires re-embedding existing documents. A different dimension also requires a schema migration. Do not switch an existing collection by changing configuration alone.
 
-### `POST /api/documents`
+## MVP limits
 
-Request:
-
-```json
-{
-  "title": "Refund Policy",
-  "content": "Users can request a refund within 7 days."
-}
-```
-
-Response:
-
-```json
-{
-  "message": "Document added successfully",
-  "documentId": 1,
-  "chunksCreated": 1
-}
-```
-
-### `GET /api/documents`
-
-Response:
-
-```json
-[
-  {
-    "id": 1,
-    "title": "Refund Policy",
-    "created_at": "2026-05-11T10:00:00.000Z"
-  }
-]
-```
-
-### `POST /api/ask`
-
-Request:
-
-```json
-{
-  "question": "Can I get a refund?"
-}
-```
-
-Response:
-
-```json
-{
-  "answer": "Yes, users can request a refund within 7 days.",
-  "sources": [
-    {
-      "documentId": 1,
-      "content": "Users can request a refund within 7 days."
-    }
-  ]
-}
-```
-
-## Limits
-
-- Text input only. There is no file upload flow.
-- No authentication.
-- Chunking is simple paragraph splitting with a 500-character fallback split.
-- Answers are grounded only in retrieved chunks, not the full database.
+Text only. No user authentication, file parsing, or background ingestion. The keys identify the calling app, not its end users. Use a separate deployment for each app. Document ingestion calls Gemini synchronously; large imports should be split across requests.

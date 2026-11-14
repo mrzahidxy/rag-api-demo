@@ -1,11 +1,11 @@
 import express, { NextFunction, Request, Response } from "express";
-import { PoolClient } from "pg";
-import * as db from "../db";
 import { chunkText } from "../services/chunkService";
-import { generateDocumentEmbedding } from "../services/embeddingService";
-import { DocumentInsertRow, DocumentListItem, DocumentRequestBody } from "../types";
+import { embeddings, store } from "../providers";
+import { DocumentRequestBody } from "../types";
 
 const router = express.Router();
+const MAX_CONTENT_LENGTH = 20_000;
+const MAX_CHUNKS = 40;
 
 router.post(
   "/",
@@ -14,8 +14,9 @@ router.post(
     res: Response,
     next: NextFunction
   ): Promise<void> => {
-    const title = String(req.body.title || "").trim();
-    const content = String(req.body.content || "").trim();
+    const title = String(req.body?.title || "").trim();
+    const content = String(req.body?.content || "").trim();
+    const externalId = req.body?.externalId === undefined ? null : String(req.body.externalId).trim();
 
     if (!title) {
       res.status(400).json({ error: "Title is required." });
@@ -26,34 +27,26 @@ router.post(
       res.status(400).json({ error: "Content is required." });
       return;
     }
-
-    let client: PoolClient | undefined;
-    let transactionStarted = false;
+    if (content.length > MAX_CONTENT_LENGTH) {
+      res.status(413).json({ error: `Content exceeds ${MAX_CONTENT_LENGTH} characters.` });
+      return;
+    }
+    if (externalId !== null && (!externalId || externalId.length > 200)) {
+      res.status(400).json({ error: "externalId must be 1–200 characters." });
+      return;
+    }
 
     try {
-      client = await db.pool.connect();
-      await client.query("BEGIN");
-      transactionStarted = true;
-
-      const documentResult = await client.query<DocumentInsertRow>(
-        "INSERT INTO documents (title, content) VALUES ($1, $2) RETURNING id",
-        [title, content]
-      );
-
-      const documentId = documentResult.rows[0].id;
       const chunks = chunkText(content);
-
-      for (const chunk of chunks) {
-        // Each chunk gets its own embedding so we can search smaller pieces later.
-        const embedding = await generateDocumentEmbedding(chunk, title);
-
-        await client.query(
-          "INSERT INTO chunks (document_id, content, embedding) VALUES ($1, $2, $3::vector)",
-          [documentId, chunk, db.toVectorString(embedding)]
-        );
+      if (chunks.length > MAX_CHUNKS) {
+        res.status(413).json({ error: `Document exceeds ${MAX_CHUNKS} chunks.` });
+        return;
       }
-
-      await client.query("COMMIT");
+      const embedded = [];
+      for (const chunk of chunks) {
+        embedded.push({ content: chunk, embedding: await embeddings.embedDocument(chunk, title) });
+      }
+      const documentId = await store.add(externalId, title, content, embedded);
 
       res.status(201).json({
         message: "Document added successfully",
@@ -61,24 +54,31 @@ router.post(
         chunksCreated: chunks.length
       });
     } catch (error) {
-      if (client && transactionStarted) {
-        await client.query("ROLLBACK");
-      }
-
       next(error);
-    } finally {
-      client?.release();
     }
   }
 );
 
 router.get("/", async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const result = await db.query<DocumentListItem>(
-      "SELECT id, title, created_at FROM documents ORDER BY created_at DESC"
-    );
+    res.json(await store.list());
+  } catch (error) {
+    next(error);
+  }
+});
 
-    res.json(result.rows);
+router.delete("/:id", async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) {
+    res.status(400).json({ error: "Valid document ID is required." });
+    return;
+  }
+  try {
+    if (!await store.remove(id)) {
+      res.status(404).json({ error: "Document not found." });
+      return;
+    }
+    res.status(204).send();
   } catch (error) {
     next(error);
   }
