@@ -2,6 +2,7 @@ import express, { NextFunction, Request, Response } from "express";
 import { chunkText } from "../services/chunkService";
 import { embeddings, store } from "../providers";
 import { DocumentRequestBody } from "../types";
+import { normalizeExternalId } from "../externalId";
 
 const router = express.Router();
 const MAX_CONTENT_LENGTH = 20_000;
@@ -16,7 +17,7 @@ router.post(
   ): Promise<void> => {
     const title = String(req.body?.title || "").trim();
     const content = String(req.body?.content || "").trim();
-    const externalId = req.body?.externalId === undefined ? null : String(req.body.externalId).trim();
+    const externalId = normalizeExternalId(req.body?.externalId);
 
     if (!title) {
       res.status(400).json({ error: "Title is required." });
@@ -31,8 +32,8 @@ router.post(
       res.status(413).json({ error: `Content exceeds ${MAX_CONTENT_LENGTH} characters.` });
       return;
     }
-    if (externalId !== null && (!externalId || externalId.length > 200)) {
-      res.status(400).json({ error: "externalId must be 1–200 characters." });
+    if (externalId === undefined) {
+      res.status(400).json({ error: "externalId must be a string of 1–200 characters when supplied." });
       return;
     }
 

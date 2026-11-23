@@ -33,7 +33,7 @@ curl -X POST http://localhost:5000/api/ask \
   -d '{"question":"When can I get a refund?"}'
 ```
 
-`externalId` is optional. Reusing one atomically updates the document and replaces its chunks while preserving its numeric ID. Without it, each POST creates a new document. Text is limited to 20,000 characters and 40 chunks per request.
+`externalId` is optional. Omit it or send `null` to create a new document. A nonempty string identifies a document to update: reusing it atomically replaces its chunks while preserving its numeric ID. Other types are rejected. Text is limited to 20,000 characters and 40 chunks per request.
 
 A successful document request returns HTTP 201 with `documentId` and `chunksCreated`. A successful question returns `answer` and `sources` (each source has a `documentId` and chunk `content`). Listing returns document IDs, external IDs, titles, and creation times. Delete returns HTTP 204, or 404 when the ID does not exist. Empty required fields return 400; oversized documents return 413. A missing or invalid key returns 401; too many requests return 429 with `Retry-After`.
 
