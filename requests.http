@@ -1,22 +1,38 @@
 @baseUrl = http://localhost:5000
+# API_KEY and ADMIN_API_KEY are loaded from .env by VS Code REST Client.
 
 ### Health check
 GET {{baseUrl}}/health
 
 ### Add a document
 POST {{baseUrl}}/api/documents
+X-Api-Key: {{$dotenv ADMIN_API_KEY}}
 Content-Type: application/json
 
 {
+  "externalId": "refund-policy",
   "title": "Refund Policy",
-  "content": "We offer phone support 9-5 days a week."
+  "content": "Refunds are available within seven days."
+}
+
+### Replace the same document (the documentId should stay the same)
+POST {{baseUrl}}/api/documents
+X-Api-Key: {{$dotenv ADMIN_API_KEY}}
+Content-Type: application/json
+
+{
+  "externalId": "refund-policy",
+  "title": "Refund Policy",
+  "content": "Refunds are available within fourteen days."
 }
 
 ### List documents
 GET {{baseUrl}}/api/documents
+X-Api-Key: {{$dotenv ADMIN_API_KEY}}
 
 ### Ask a question
 POST {{baseUrl}}/api/ask
+X-Api-Key: {{$dotenv API_KEY}}
 Content-Type: application/json
 
 {
@@ -25,8 +41,13 @@ Content-Type: application/json
 
 ### Ask a question that may not exist in context
 POST {{baseUrl}}/api/ask
+X-Api-Key: {{$dotenv API_KEY}}
 Content-Type: application/json
 
 {
   "question": "Do you offer phone support?"
 }
+
+### Delete a document (replace 1 with an ID returned by the add request)
+DELETE {{baseUrl}}/api/documents/1
+X-Api-Key: {{$dotenv ADMIN_API_KEY}}

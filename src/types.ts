@@ -1,4 +1,5 @@
 export interface DocumentRequestBody {
+  externalId?: string | null;
   title?: string;
   content?: string;
 }
